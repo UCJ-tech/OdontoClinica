@@ -1,22 +1,3 @@
-"""
-Script: Análise de Faturamento por Dentista - Clinicorp
-=========================================================
-
-Objetivo: consumir o endpoint estimates/list da API da Clinicorp,
-filtrando por período definido pelo usuário, e gerar uma planilha
-Excel que ajuda a decidir se compensa manter um dentista específico
-na clínica (faturamento total, ticket médio, volume de procedimentos
-por profissional).
-
-IMPORTANTE - antes de rodar:
-1. Confirme a URL base exata da API e o nome dos headers de autenticação.
-   No Swagger (https://sistema.clinicorp.com/api-docs/#/estimates),
-   clique em "Try it out" no endpoint estimates/list, preencha os campos
-   de exemplo e veja o "curl" gerado. Copie a URL e os headers para cá.
-2. Preencha as variáveis na seção CONFIGURAÇÃO abaixo.
-3. Rode: pip install requests openpyxl pandas
-4. Rode: python analise_dentistas.py
-"""
 
 import requests
 import pandas as pd
@@ -25,18 +6,16 @@ import sys
 import time
 import base64
 
-# =========================================================
-# CONFIGURAÇÃO - PREENCHA AQUI
-# =========================================================
+
 
 BASE_URL = "https://api.clinicorp.com/rest/v1"
 ENDPOINT = "/estimates/list"
 
-# Dados confirmados no Swagger (estimates/list)
-SUBSCRIBER_ID = ""   # parâmetro "subscriber_id"
-CLINIC_ID = ""           # parâmetro "clinic_id" (opcional - deixe "" se não usar multiclínicas)
 
-# Autenticação Basic Auth (usuário e senha da Clinicorp)
+SUBSCRIBER_ID = ""  
+CLINIC_ID = ""           
+
+
 USERNAME = ""
 PASSWORD = ""
 
