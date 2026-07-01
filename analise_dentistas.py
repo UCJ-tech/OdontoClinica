@@ -1,4 +1,3 @@
-
 import requests
 import pandas as pd
 from datetime import datetime
@@ -6,14 +5,16 @@ import sys
 import time
 import base64
 
-
+# =========================================================
+# CONFIGURAÇÃO - PREENCHA AQUI
+# =========================================================
 
 BASE_URL = "https://api.clinicorp.com/rest/v1"
 ENDPOINT = "/estimates/list"
 
 
-SUBSCRIBER_ID = ""  
-CLINIC_ID = ""           
+SUBSCRIBER_ID = "SEU_SUBSCRIBER_ID_AQUI"   
+CLINIC_ID = "SEU_CLINIC_ID_AQUI"           
 
 
 USERNAME = ""
@@ -113,62 +114,49 @@ def buscar_estimates(data_inicio, data_fim):
 def processar_dados(registros):
     """
     Transforma a lista de orçamentos em tabelas de análise.
-
-    Estrutura real confirmada via API:
-    - Cada orçamento tem um ProfessionalName/ProfessionalId "dono" do orçamento
-    - Cada item dentro de ProcedureList tem seu próprio DentistName/Dentist_PersonId,
-      que pode ser diferente do profissional do orçamento (ex: procedimento
-      encaminhado para outro dentista dentro do mesmo orçamento)
-    - Itens com "Deleted": "X" foram excluídos e não devem contar no faturamento
-    - O valor real cobrado por procedimento é FinalAmount (não Amount,
-      que é o valor de tabela antes de ajustes)
+    Usa exclusivamente o profissional EXECUTANTE de cada procedimento
+    (DentistName / Dentist_PersonId dentro de ProcedureList).
+    Itens com Deleted=X são excluídos do cálculo.
+    O valor real é FinalAmount (após ajustes sobre Amount de tabela).
     """
     linhas = []
 
     for est in registros:
-        orc_prof_id = est.get("ProfessionalId")
-        orc_prof_nome = est.get("ProfessionalName")
         status_orcamento = est.get("Status")
-        data = est.get("Date")
-        paciente = est.get("PatientName")
-        treatment_id = est.get("TreatmentId")
-
-        procedimentos = est.get("ProcedureList", [])
+        data             = est.get("Date")
+        paciente         = est.get("PatientName")
+        treatment_id     = est.get("TreatmentId")
+        procedimentos    = est.get("ProcedureList", [])
 
         if not procedimentos:
             linhas.append({
-                "TreatmentId": treatment_id,
-                "Data": data,
-                "Paciente": paciente,
-                "Status_Orcamento": status_orcamento,
-                "Profissional_Orcamento": orc_prof_nome,
-                "ProfessionalId_Orcamento": orc_prof_id,
-                "Procedimento": None,
-                "Dente": None,
-                "Profissional_Executante": orc_prof_nome,
-                "Dentist_PersonId_Executante": orc_prof_id,
-                "Valor_Tabela": est.get("Amount", 0),
-                "Valor_Final": est.get("Amount", 0),
-                "Deletado": False,
+                "TreatmentId":               treatment_id,
+                "Data":                      data,
+                "Paciente":                  paciente,
+                "Status_Orcamento":          status_orcamento,
+                "Procedimento":              None,
+                "Dente":                     None,
+                "Profissional_Executante":   None,
+                "Dentist_PersonId_Executante": None,
+                "Valor_Tabela":              est.get("Amount", 0),
+                "Valor_Final":               est.get("Amount", 0),
+                "Deletado":                  False,
             })
             continue
 
         for proc in procedimentos:
-            deletado = proc.get("Deleted") == "X"
             linhas.append({
-                "TreatmentId": treatment_id,
-                "Data": data,
-                "Paciente": paciente,
-                "Status_Orcamento": status_orcamento,
-                "Profissional_Orcamento": orc_prof_nome,
-                "ProfessionalId_Orcamento": orc_prof_id,
-                "Procedimento": proc.get("OperationDescription"),
-                "Dente": proc.get("Tooth"),
-                "Profissional_Executante": proc.get("DentistName"),
+                "TreatmentId":               treatment_id,
+                "Data":                      data,
+                "Paciente":                  paciente,
+                "Status_Orcamento":          status_orcamento,
+                "Procedimento":              proc.get("OperationDescription"),
+                "Dente":                     proc.get("Tooth"),
+                "Profissional_Executante":   proc.get("DentistName"),
                 "Dentist_PersonId_Executante": proc.get("Dentist_PersonId"),
-                "Valor_Tabela": proc.get("Amount", 0),
-                "Valor_Final": proc.get("FinalAmount", proc.get("Amount", 0)),
-                "Deletado": deletado,
+                "Valor_Tabela":              proc.get("Amount", 0),
+                "Valor_Final":               proc.get("FinalAmount", proc.get("Amount", 0)),
+                "Deletado":                  proc.get("Deleted") == "X",
             })
 
     df_detalhado = pd.DataFrame(linhas)
@@ -177,45 +165,32 @@ def processar_dados(registros):
         print("Nenhum dado retornado para o período. Verifique os filtros.")
         sys.exit(0)
 
-    # Remove procedimentos marcados como deletados do cálculo de faturamento
     df_ativos = df_detalhado[~df_detalhado["Deletado"]].copy()
 
     status_unicos = sorted(df_detalhado["Status_Orcamento"].dropna().unique().tolist())
-    print(f"Status de orçamento encontrados no período: {status_unicos}")
-    print(
-        f"{df_detalhado['Deletado'].sum()} procedimento(s) marcados como deletados "
-        f"foram excluídos do cálculo de faturamento.\n"
-    )
+    print(f"Status encontrados no período: {status_unicos}")
+    print(f"{df_detalhado['Deletado'].sum()} procedimento(s) deletados excluídos do cálculo.\n")
 
-    def montar_resumo(df, coluna_id, coluna_nome, rotulo):
-        resumo = (
-            df.groupby([coluna_id, coluna_nome])
-            .agg(
-                Faturamento_Total=("Valor_Final", "sum"),
-                Qtd_Procedimentos=("Procedimento", "count"),
-                Qtd_Tratamentos=("TreatmentId", "nunique"),
-                Ticket_Medio_Procedimento=("Valor_Final", "mean"),
-            )
-            .reset_index()
-            .rename(columns={coluna_id: "ProfessionalId", coluna_nome: "Profissional"})
-            .sort_values("Faturamento_Total", ascending=False)
+    # Resumo por profissional EXECUTANTE — única visão usada
+    resumo_executante = (
+        df_ativos.groupby(["Dentist_PersonId_Executante", "Profissional_Executante"])
+        .agg(
+            Faturamento_Total=("Valor_Final", "sum"),
+            Qtd_Procedimentos=("Procedimento", "count"),
+            Qtd_Tratamentos=("TreatmentId", "nunique"),
+            Ticket_Medio_Procedimento=("Valor_Final", "mean"),
         )
-        resumo["Ticket_Medio_Procedimento"] = resumo["Ticket_Medio_Procedimento"].round(2)
-        resumo["Faturamento_Total"] = resumo["Faturamento_Total"].round(2)
-        resumo.insert(0, "Visao", rotulo)
-        return resumo
-
-    # Visão 1: por profissional "dono" do orçamento
-    resumo_orcamento = montar_resumo(
-        df_ativos, "ProfessionalId_Orcamento", "Profissional_Orcamento", "Por Orçamento"
+        .reset_index()
+        .rename(columns={
+            "Dentist_PersonId_Executante": "ProfessionalId",
+            "Profissional_Executante":     "Profissional",
+        })
+        .sort_values("Faturamento_Total", ascending=False)
     )
+    resumo_executante["Ticket_Medio_Procedimento"] = resumo_executante["Ticket_Medio_Procedimento"].round(2)
+    resumo_executante["Faturamento_Total"]         = resumo_executante["Faturamento_Total"].round(2)
 
-    # Visão 2: por profissional que de fato executou cada procedimento
-    resumo_executante = montar_resumo(
-        df_ativos, "Dentist_PersonId_Executante", "Profissional_Executante", "Por Execução"
-    )
-
-    # Resumo por status, para você decidir depois como filtrar (ex: ao cruzar com financeiro)
+    # Resumo por status
     resumo_status = (
         df_ativos.groupby("Status_Orcamento")
         .agg(
@@ -227,10 +202,10 @@ def processar_dados(registros):
     )
     resumo_status["Valor_Total"] = resumo_status["Valor_Total"].round(2)
 
-    return df_detalhado, resumo_orcamento, resumo_executante, resumo_status
+    return df_detalhado, resumo_executante, resumo_status
 
 
-def gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status, data_inicio, data_fim):
+def gerar_excel(df_detalhado, resumo_executante, resumo_status, data_inicio, data_fim):
     """
     Gera o Excel com dashboard UCJ + 3 abas de dados.
 
@@ -290,7 +265,8 @@ def gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status
         .rename(columns={"Profissional_Executante": "Profissional"})
     )
 
-    df_rank = resumo_orcamento.drop(columns=["Visao"]).copy()
+    # Ranking baseado exclusivamente no profissional EXECUTANTE
+    df_rank = resumo_executante.copy()
     df_rank = df_rank.merge(aprov_por, on="Profissional", how="left")
     df_rank["Fat_Aprovado"]  = df_rank["Fat_Aprovado"].fillna(0).astype(int)
     df_rank["Proc_Aprovado"] = df_rank["Proc_Aprovado"].fillna(0).astype(int)
@@ -307,8 +283,6 @@ def gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status
     total_val_s = int(resumo_status["Valor_Total"].sum())
 
     n = len(df_rank)
-    t1 = max(1, n // 3)
-    t2 = max(2, 2 * n // 3)
 
     # ── Workbook ─────────────────────────────────────────────────────────────
     wb = Workbook()
@@ -406,7 +380,7 @@ def gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status
     # ── CABEÇALHO TABELA ───────────────────────────────────────────────────
     hdrs = [
         ("#",               (2, 2)),
-        ("DENTISTA  ·  RECOMENDAÇÃO", (3, 5)),
+        ("DENTISTA",        (3, 5)),
         ("FAT. TOTAL (R$)", (6, 7)),
         ("FAT. APROVADO",   (8, 9)),
         ("TAXA APROV.",     (10, 10)),
@@ -427,26 +401,18 @@ def gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status
 
     # ── LINHAS DOS DENTISTAS ───────────────────────────────────────────────
     for i, row in df_rank.iterrows():
-        r = 10 + i
-        if i < t1:
-            bg, rec, rec_cor = "E8F5E9", "▲ MANTER",  VERDE_OK
-        elif i < t2:
-            bg, rec, rec_cor = "FFF9E6", "◉ AVALIAR", AMARELO
-        else:
-            bg, rec, rec_cor = "FDECEA", "▼ REVISAR", BORDE
-
-        dentista_val = f"{row['Profissional'].title()}"
+        r  = 10 + i
+        bg = BRANCO if i % 2 == 0 else "F9F3F2"
 
         dados_linha = [
-            (f"{i+1}",                         (2, 2),   _center(), _font(bold=True, size=10, color=BORDE)),
-            (dentista_val,                      (3, 4),   _left(),   _font(bold=True, size=9,  color=CINZA_ESC)),
-            (rec,                               (5, 5),   _center(), _font(bold=True, size=8,  color=rec_cor)),
-            (_fmt_brl(row["Faturamento_Total"]), (6, 7),  _center(), _font(bold=True, size=9,  color=BORDE_ESC)),
-            (_fmt_brl(row["Fat_Aprovado"]),     (8, 9),   _center(), _font(size=9, color=VERDE_OK if row["Fat_Aprovado"]>0 else CINZA_MED)),
-            (f"{row['Taxa_Aprov_Pct']:.1f}%",  (10, 10), _center(), _font(size=9)),
-            (str(row["Qtd_Procedimentos"]),     (11, 11), _center(), _font(size=9)),
-            (str(row["Qtd_Tratamentos"]),       (12, 12), _center(), _font(size=9)),
-            (_fmt_brl2(row["Ticket_Medio_Procedimento"]), (13, 13), _center(), _font(size=9)),
+            (f"{i+1}",                                      (2, 2),   _center(), _font(bold=True, size=10, color=BORDE)),
+            (row["Profissional"].title(),                    (3, 5),   _left(),   _font(bold=True, size=9,  color=CINZA_ESC)),
+            (_fmt_brl(row["Faturamento_Total"]),             (6, 7),   _center(), _font(bold=True, size=9,  color=BORDE_ESC)),
+            (_fmt_brl(row["Fat_Aprovado"]),                  (8, 9),   _center(), _font(size=9, color=VERDE_OK if row["Fat_Aprovado"]>0 else CINZA_MED)),
+            (f"{row['Taxa_Aprov_Pct']:.1f}%",               (10, 10), _center(), _font(size=9)),
+            (str(row["Qtd_Procedimentos"]),                  (11, 11), _center(), _font(size=9)),
+            (str(row["Qtd_Tratamentos"]),                    (12, 12), _center(), _font(size=9)),
+            (_fmt_brl2(row["Ticket_Medio_Procedimento"]),    (13, 13), _center(), _font(size=9)),
         ]
 
         for val, (c1, c2), aln, fnt in dados_linha:
@@ -463,22 +429,8 @@ def gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status
             for cc in range(c1+1, c2+1):
                 ws.cell(row=r, column=cc).fill = _fill(bg)
 
-    # ── LEGENDA ────────────────────────────────────────────────────────────
-    leg_row = 10 + n
-    ws.row_dimensions[leg_row].height = 16
-    ws.merge_cells(f"B{leg_row}:M{leg_row}")
-    c = ws[f"B{leg_row}"]
-    c.value = ("  ▲ MANTER = top 1/3 por faturamento    "
-               "◉ AVALIAR = faixa média    "
-               "▼ REVISAR = bottom 1/3 — analisar custo × benefício")
-    c.font  = _font(italic=True, size=8, color=BORDE_ESC)
-    c.fill  = _fill(BORDE_CLR)
-    c.alignment = _left()
-    for col in range(3, 14):
-        ws.cell(row=leg_row, column=col).fill = _fill(BORDE_CLR)
-
     # ── TÍTULO STATUS ──────────────────────────────────────────────────────
-    st_row = leg_row + 2
+    st_row = 10 + n + 1
     ws.row_dimensions[st_row].height = 22
     ws.merge_cells(f"B{st_row}:M{st_row}")
     c = ws[f"B{st_row}"]
@@ -687,7 +639,7 @@ def gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status
     ]
     _formatar_aba(ws3, df_proc_excel, "ANALISE DE PROCEDIMENTOS — VOLUME, VALOR E CRITICIDADE")
 
-    # Destacar linhas críticas em rosa
+    # Destacar linhas críticas em rosa com texto bordô
     for ri in range(4, 4 + len(df_proc_excel)):
         critico_val = ws3.cell(row=ri, column=9).value
         if critico_val == "SIM":
@@ -765,5 +717,5 @@ def gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status
 if __name__ == "__main__":
     data_inicio, data_fim = pedir_periodo()
     registros = buscar_estimates(data_inicio, data_fim)
-    df_detalhado, resumo_orcamento, resumo_executante, resumo_status = processar_dados(registros)
-    gerar_excel(df_detalhado, resumo_orcamento, resumo_executante, resumo_status, data_inicio, data_fim)
+    df_detalhado, resumo_executante, resumo_status = processar_dados(registros)
+    gerar_excel(df_detalhado, resumo_executante, resumo_status, data_inicio, data_fim)
