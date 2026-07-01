@@ -1,4 +1,12 @@
+"""
+UCJ — Análise de Faturamento por Dentista
+==========================================
+Interface Streamlit para a análise de orçamentos via API Clinicorp.
 
+Como rodar:
+    pip install streamlit pandas plotly openpyxl requests
+    streamlit run app.py
+"""
 
 import io
 import base64
@@ -205,29 +213,20 @@ def fmt_brl(v):
 def fmt_brl0(v):
     return f"R$ {int(v):,}".replace(",", ".")
 
-def semaforo(rank, n):
-    t1, t2 = max(1, n // 3), max(2, 2 * n // 3)
-    if rank < t1:
-        return '<span class="badge-manter">MANTER</span>'
-    elif rank < t2:
-        return '<span class="badge-avaliar">AVALIAR</span>'
-    else:
-        return '<span class="badge-revisar">REVISAR</span>'
-
 def chip_status(s):
     m = {"APPROVED": "approved", "OPEN": "open", "REJECTED": "rejected"}
     k = m.get(s, "open")
     label = {"APPROVED": "Aprovado", "OPEN": "Em Aberto", "REJECTED": "Rejeitado"}.get(s, s)
     return f'<span class="chip-{k}">{label}</span>'
 
-def gerar_excel_bytes(df_det, df_orc, df_exec, df_stat, d_ini, d_fim):
+def gerar_excel_bytes(df_det, df_exec, df_stat, d_ini, d_fim):
     """Gera o Excel em memória e retorna bytes para download."""
     import tempfile, os
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         path = tmp.name
     import analise_dentistas as ad
     ad.OUTPUT_FILE = path
-    gerar_excel(df_det, df_orc, df_exec, df_stat, d_ini, d_fim)
+    gerar_excel(df_det, df_exec, df_stat, d_ini, d_fim)
     with open(path, "rb") as f:
         data = f.read()
     os.unlink(path)
@@ -314,10 +313,9 @@ if buscar:
                     d_ini.strftime("%Y-%m-%d"),
                     d_fim.strftime("%Y-%m-%d"),
                 )
-                df_det, df_orc, df_exec, df_stat = processar_dados(registros)
+                df_det, df_exec, df_stat = processar_dados(registros)
                 st.session_state.dados = {
                     "df_det":  df_det,
-                    "df_orc":  df_orc,
                     "df_exec": df_exec,
                     "df_stat": df_stat,
                     "d_ini":   d_ini.strftime("%Y-%m-%d"),
@@ -334,12 +332,12 @@ if buscar:
 if st.session_state.dados:
     d      = st.session_state.dados
     df_det = d["df_det"]
-    df_orc = d["df_orc"]
+    df_exec= d["df_exec"]
     df_stat= d["df_stat"]
     d_ini  = d["d_ini"]
     d_fim  = d["d_fim"]
 
-    # Pré-processar
+    # Pré-processar usando exclusivamente o profissional EXECUTANTE
     df_aprov = df_det[df_det["Status_Orcamento"] == "APPROVED"]
     aprov_por = (
         df_aprov.groupby("Profissional_Executante")
@@ -349,7 +347,7 @@ if st.session_state.dados:
         .rename(columns={"Profissional_Executante":"Profissional"})
     )
 
-    df_rank = df_orc.drop(columns=["Visao"], errors="ignore").copy()
+    df_rank = df_exec.copy()
     df_rank = df_rank.merge(aprov_por, on="Profissional", how="left")
     df_rank["Fat_Aprovado"]   = df_rank["Fat_Aprovado"].fillna(0).astype(int)
     df_rank["Taxa_Aprov_Pct"] = (
@@ -391,14 +389,12 @@ if st.session_state.dados:
 
         linhas_html = ""
         for i, row in df_rank.iterrows():
-            badge  = semaforo(i, n)
             td = f'padding:10px 14px;border-bottom:1px solid #F0E4E3;vertical-align:middle;color:{CINZA_ESC};'
             bg = "background:#FBF5F5;" if i % 2 != 0 else ""
             linhas_html += f"""
             <tr style='{bg}'>
               <td style='{td}font-weight:700;color:{BORDE};text-align:center'>{i+1}</td>
               <td style='{td}font-weight:600'>{row['Profissional'].title()}</td>
-              <td style='{td}'>{badge}</td>
               <td style='{td}font-weight:700;color:{BORDE_ESC}'>{fmt_brl0(row['Faturamento_Total'])}</td>
               <td style='{td}color:{"#1A7A1A" if row["Fat_Aprovado"]>0 else CINZA}'>{fmt_brl0(row['Fat_Aprovado'])}</td>
               <td style='{td}text-align:center'>{row['Taxa_Aprov_Pct']:.1f}%</td>
@@ -411,7 +407,7 @@ if st.session_state.dados:
         <table class="rank-table">
           <thead>
             <tr>
-              <th>#</th><th>Dentista</th><th>Recomendacao</th>
+              <th>#</th><th>Dentista</th>
               <th>Fat. Total</th><th>Fat. Aprovado</th>
               <th>Taxa Aprov.</th><th>Procedimentos</th>
               <th>Tratamentos</th><th>Ticket Medio</th>
@@ -419,13 +415,6 @@ if st.session_state.dados:
           </thead>
           <tbody>{linhas_html}</tbody>
         </table>
-        <br>
-        <div style='font-size:0.75rem;color:{CINZA};padding:8px;
-                    background:{BORDE_CLR};border-radius:6px;'>
-          <b>MANTER</b> = top 1/3 por faturamento &nbsp;|&nbsp;
-          <b>AVALIAR</b> = faixa media &nbsp;|&nbsp;
-          <b>REVISAR</b> = bottom 1/3 — analisar custo x beneficio
-        </div>
         """, unsafe_allow_html=True)
 
     # ── TAB 2: ANÁLISE DE PROCEDIMENTOS ──────────────────────────────────────
@@ -850,7 +839,7 @@ if st.session_state.dados:
     with dl1:
         with st.spinner("Preparando Excel..."):
             xlsx_bytes = gerar_excel_bytes(
-                d["df_det"], d["df_orc"], d["df_exec"], d["df_stat"],
+                d["df_det"], d["df_exec"], d["df_stat"],
                 d["d_ini"], d["d_fim"]
             )
         st.download_button(
